@@ -267,9 +267,5 @@ shinyApp(ui, server)
 
 rsconnect::writeManifest()
 
-grep(
-  "install\\.packages|install.packages",
-  readLines("app.R"),
-  value = TRUE
-)
+
 
