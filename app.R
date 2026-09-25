@@ -23,7 +23,7 @@ library(DT)
 # ------------------------------------------------------------
 # Load pre-computed layers (lazy: values read only when cropped)
 # ------------------------------------------------------------
-setwd("C:/Users/LENOVO P15V G3/Desktop/R_Projects/SeanShiny")
+
 surf_dir <- "suitability_surfaces"
 
 susc_class  <- rast("susceptible_classes_100m.tif")
