@@ -1,5 +1,3 @@
-install.packages(c("shiny", "leaflet", "leaflet.extras", "DT"))
-
 # ============================================================
 # Restoration siting tool — South Island, New Zealand
 #
@@ -268,3 +266,10 @@ shinyApp(ui, server)
 
 
 rsconnect::writeManifest()
+
+grep(
+  "install\\.packages|install.packages",
+  readLines("app.R"),
+  value = TRUE
+)
+
