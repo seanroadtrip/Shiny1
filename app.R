@@ -19,6 +19,11 @@
 #   outputs/cv_results.rds
 #   outputs/closure_model_5sp.rds
 # ============================================================
+library(terra)
+library(shiny)
+library(leaflet)
+library(sf)
+library(DT)
 
 surf_dir <- "suitability_surfaces"
 
