@@ -24,6 +24,7 @@ library(shiny)
 library(leaflet)
 library(sf)
 library(DT)
+library(leaflet.extras)
 
 surf_dir <- "suitability_surfaces"
 
