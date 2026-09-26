@@ -140,10 +140,17 @@ server <- function(input, output, session) {
       addProviderTiles("Esri.WorldImagery", group = "Satellite") |>
       addLayersControl(baseGroups = c("Map", "Satellite")) |>
       setView(lng = 171.0, lat = -43.5, zoom = 6) |>
-      addDrawToolbar(targetGroup = "drawn", polylineOptions = FALSE,
-                     circleOptions = FALSE, markerOptions = FALSE,
-                     circleMarkerOptions = FALSE,
-                     editOptions = editToolbarOptions())
+      addDrawToolbar(
+        targetGroup = "drawn",
+        polylineOptions = FALSE, circleOptions = FALSE,
+        markerOptions = FALSE, circleMarkerOptions = FALSE,
+        polygonOptions = drawPolygonOptions(
+          shapeOptions = drawShapeOptions(
+            fillOpacity = 0.05, color = "#333333", weight = 2)),
+        rectangleOptions = drawRectangleOptions(
+          shapeOptions = drawShapeOptions(
+            fillOpacity = 0.05, color = "#333333", weight = 2)),
+        editOptions = editToolbarOptions())
   })
   
   poly <- reactiveVal(NULL)
@@ -225,7 +232,7 @@ server <- function(input, output, session) {
     if (!r$empty && !is.null(r$rest_poly) && nrow(r$rest_poly)) {
       cls <- as.character(r$rest_poly[[1]])
       proxy |> addPolygons(data = r$rest_poly, group = "Restorable",
-                           fillColor = unname(lcdb_cols[cls]), fillOpacity = 0.65,
+                           fillColor = unname(lcdb_cols[cls]), fillOpacity = 0.85,
                            color = "#1B4332", weight = 0.6,
                            label = unname(lcdb_names[cls]))
     }
