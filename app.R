@@ -2,27 +2,23 @@
 # Restoration siting tool — South Island, New Zealand
 #
 # Draw a boundary, set operational constraints, and the app
-# returns: susceptible land cover within the boundary, the
-# portion restorable under those constraints, which indigenous
-# species are environmentally suitable, and projected time to
-# canopy closure for species combinations with growth data.
+# returns: susceptible land cover, the portion restorable under
+# those constraints, which species are environmentally suitable,
+# and projected time to canopy closure for species combinations
+# with growth data.
 #
-# All modelling is pre-computed. The app only clips and
-# summarises rasters, so it stays fast and light.
+# All modelling is pre-computed; the app clips and summarises.
 #
-# Save as app.R in the project root and run with shiny::runApp()
+# Folder layout:
+#   app.R
+#   GIS_files/suitability_surfaces/  (one .tif per species)
+#   GIS_files/susceptible_classes_100m.tif
+#   GIS_files/treeline_consensus.tif
+#   GIS_files/dist_to_access_100m.tif
+#   GIS_files/slope_100m.tif
+#   outputs/cv_results.rds
+#   outputs/closure_model_5sp.rds
 # ============================================================
-
-library(shiny)
-library(leaflet)
-library(leaflet.extras)
-library(terra)
-library(sf)
-library(DT)
-
-# ------------------------------------------------------------
-# Load pre-computed layers (lazy: values read only when cropped)
-# ------------------------------------------------------------
 
 surf_dir <- "suitability_surfaces"
 
@@ -31,115 +27,132 @@ consensus   <- rast("treeline_consensus.tif")
 dist_access <- rast("dist_to_access_100m.tif")
 slope       <- rast("slope_100m.tif")
 
-cell_km2 <- prod(res(susc_class)) / 1e6
-cell_ha  <- prod(res(susc_class)) / 10000
+cell_ha <- prod(res(susc_class)) / 10000
 
 lcdb_names <- c("15" = "Alpine Grass/Herbfield",  "41" = "Low Producing Grassland",
                 "44" = "Depleted Grassland",      "51" = "Gorse and/or Broom",
                 "55" = "Sub Alpine Shrubland",    "56" = "Mixed Exotic Shrubland",
                 "58" = "Matagouri or Grey Scrub", "64" = "Forest - Harvested")
+lcdb_cols  <- c("41" = "#A3D400", "55" = "#B8AB6A", "15" = "#ABCD66",
+                "44" = "#D2D25A", "51" = "#7D690F", "58" = "#D4CDAE",
+                "64" = "#A1AD61", "56" = "#C4BB89")
 
 fits <- readRDS("cv_results.rds")
-sp_names <- names(fits)
+sp_names  <- names(fits)
 safe_name <- function(x) gsub(" ", "_", x)
 
-# Model performance travels with each species so the interface
-# can show how much confidence the envelope deserves
 sp_perf <- do.call(rbind, lapply(fits, function(r) data.frame(
-  species = r$species, auc = r$auc, boyce = r$boyce, omission = r$om_S05,
-  n = r$n, stringsAsFactors = FALSE)))
+  species = r$species, auc = r$auc, omission = r$om_S05, n = r$n,
+  stringsAsFactors = FALSE)))
 
 conifers <- c("Pinus radiata", "Pinus contorta", "Pseudotsuga menziesii")
 
 closure <- readRDS("closure_model_5sp.rds")
 
-# ------------------------------------------------------------
-# UI
-# ------------------------------------------------------------
+# Species with individually significant coefficients in the best
+# supported model; the other three appeared in competitive models
+# but were not significant on their own.
+sig_species <- c("COPROB", "KUNERI")
 
+support_for <- function(code_string) {
+  if (identical(code_string, "none")) return(list(w = NA_real_, level = "Baseline"))
+  codes <- strsplit(code_string, "\\+")[[1]]
+  w <- min(closure$akaike_weight[codes])
+  lvl <- if (all(codes %in% sig_species)) "Strong"
+  else if (w >= 0.5) "Moderate" else "Weak"
+  list(w = w, level = lvl)
+}
+
+# ------------------------------------------------------------
 ui <- fluidPage(
   titlePanel("Restoration siting tool — South Island"),
   
   sidebarLayout(
-    sidebarPanel(
-      width = 3,
-      helpText("Draw a boundary on the map using the polygon or rectangle tool,",
-               "then set the operational constraints below."),
-      hr(),
-      sliderInput("dist_km", "Maximum distance from road or track (km)",
-                  min = 0.5, max = 8, value = 4, step = 0.5),
-      sliderInput("slope_deg", "Maximum working slope (degrees)",
-                  min = 5, max = 30, value = 14.4, step = 0.5),
-      helpText(tags$small(
-        "23 degrees (about 42 % grade) was used as a health and safety",
-        "limit for volunteer planting crews on unimproved ground.")),
-      hr(),
-      sliderInput("suit_thresh", "Minimum environmental similarity for a species",
-                  min = 0.01, max = 0.5, value = 0.05, step = 0.01),
-      helpText(tags$small(
-        "Lower values are more permissive. At 0.05, envelopes excluded",
-        "about 21 % of sites where species were actually recorded,",
-        "so a lower threshold may suit an advisory filter.")),
-      hr(),
-      actionButton("go", "Analyse", class = "btn-primary btn-block")
+    sidebarPanel(width = 3,
+                 strong("1. Draw your site"),
+                 helpText("Use the polygon or rectangle tool on the map."),
+                 hr(),
+                 strong("2. Set your constraints"),
+                 sliderInput("dist_km", "Furthest crews will carry plants (km)",
+                             min = 0.5, max = 8, value = 4, step = 0.5),
+                 sliderInput("slope_deg", "Steepest ground crews will work (degrees)",
+                             min = 5, max = 30, value = 14.4, step = 0.5),
+                 helpText(tags$small("23 degrees is roughly a 42 % grade, used here as a",
+                                     "health and safety limit for volunteer crews on",
+                                     "unimproved ground.")),
+                 sliderInput("suit_thresh", "How strict should the species filter be?",
+                             min = 0.01, max = 0.5, value = 0.05, step = 0.01),
+                 helpText(tags$small("Lower values include more species. At 0.05 the",
+                                     "envelopes excluded roughly one site in five where a",
+                                     "species was in fact recorded, so being permissive is",
+                                     "reasonable.")),
+                 hr(),
+                 actionButton("go", "Analyse", class = "btn-primary btn-block"),
+                 hr(),
+                 uiOutput("sp_picker")
     ),
     
-    mainPanel(
-      width = 9,
-      leafletOutput("map", height = 480),
-      br(),
-      tabsetPanel(
-        tabPanel("Summary",   br(), uiOutput("summary_box"),
-                 br(), DTOutput("cover_tbl")),
-        tabPanel("Species",   br(), helpText(
-          "Species whose environmental envelope covers the site, ranked by mean",
-          "similarity. AUC and omission indicate how much confidence the envelope",
-          "deserves: higher AUC means better discrimination, lower omission means",
-          "the envelope less often excludes sites where the species does occur."),
-          DTOutput("species_tbl")),
-        tabPanel("Canopy closure", br(), uiOutput("closure_note"),
-                 DTOutput("closure_tbl"))
-      )
+    mainPanel(width = 9,
+              leafletOutput("map", height = 480), br(),
+              tabsetPanel(
+                tabPanel("Summary", br(),
+                         helpText("Land cover classes vulnerable to wilding conifer invasion within",
+                                  "your site, and how much of that area can realistically be planted",
+                                  "given the constraints you set. Shaded areas on the map show where."),
+                         uiOutput("summary_box"), br(), DTOutput("cover_tbl")),
+                
+                tabPanel("Species", br(),
+                         helpText(tags$b("Which species suit this site?"),
+                                  "Each species is ranked by how much of your site falls inside the",
+                                  "environmental conditions where it has been recorded across the South",
+                                  "Island. Site coverage is the percentage of your site inside that",
+                                  "envelope."),
+                         helpText(tags$small(
+                           tags$b("Reading the confidence columns: "),
+                           "AUC measures how well the model distinguishes places the species grows",
+                           "from places botanists have surveyed generally; 0.5 is no better than",
+                           "chance and 1.0 is perfect. Omission is how often the model wrongly",
+                           "excluded sites where the species was actually recorded, so lower is",
+                           "better. Widespread species tend to have low AUC and low omission: poor",
+                           "at discriminating, but reliable as a filter. Wilding conifers are shown",
+                           "for reference and are shaded red.")),
+                         DTOutput("species_tbl")),
+                
+                tabPanel("Canopy closure", br(), uiOutput("closure_note"),
+                         DTOutput("closure_tbl"))
+              )
     )
   )
 )
 
 # ------------------------------------------------------------
-# Server
-# ------------------------------------------------------------
-
 server <- function(input, output, session) {
   
   output$map <- renderLeaflet({
     leaflet() |>
-      addTiles(group = "Map") |>                                  # OpenStreetMap
+      addTiles(group = "Map") |>
       addProviderTiles("Esri.WorldImagery", group = "Satellite") |>
       addLayersControl(baseGroups = c("Map", "Satellite")) |>
       setView(lng = 171.0, lat = -43.5, zoom = 6) |>
-      addDrawToolbar(
-        targetGroup = "drawn", polylineOptions = FALSE, circleOptions = FALSE,
-        markerOptions = FALSE, circleMarkerOptions = FALSE,
-        editOptions = editToolbarOptions())
+      addDrawToolbar(targetGroup = "drawn", polylineOptions = FALSE,
+                     circleOptions = FALSE, markerOptions = FALSE,
+                     circleMarkerOptions = FALSE,
+                     editOptions = editToolbarOptions())
   })
   
   poly <- reactiveVal(NULL)
   
   observeEvent(input$map_draw_new_feature, {
-    f <- input$map_draw_new_feature
-    cds <- f$geometry$coordinates[[1]]
+    cds <- input$map_draw_new_feature$geometry$coordinates[[1]]
     m <- do.call(rbind, lapply(cds, function(p) c(p[[1]], p[[2]])))
-    p <- st_sfc(st_polygon(list(m)), crs = 4326) |> st_transform(2193)
-    poly(vect(st_sf(geometry = p)))
+    poly(vect(st_sf(geometry = st_transform(
+      st_sfc(st_polygon(list(m)), crs = 4326), 2193))))
   })
   
   result <- eventReactive(input$go, {
-    req(poly())
-    p <- poly()
+    req(poly()); p <- poly()
+    d_m <- input$dist_km * 1000; s_d <- input$slope_deg
     
-    d_m <- input$dist_km * 1000
-    s_d <- input$slope_deg
-    
-    # Clip the constraint stack to the drawn boundary
     sc <- mask(crop(susc_class,  p), p)
     tl <- mask(crop(consensus,   p), p) >= 1
     da <- mask(crop(dist_access, p), p)
@@ -151,121 +164,167 @@ server <- function(input, output, session) {
     
     rest <- !is.na(sc) & !tl & (da <= d_m) & (sl <= s_d)
     
-    cover <- freq(mask(sc, rest, maskvalues = c(FALSE, NA)))
-    cover_all <- freq(sc)
+    rest_cls  <- mask(sc, rest, maskvalues = c(FALSE, NA))
+    rest_poly <- if (expanse(p, unit = "ha")[1] < 500000) {
+      tryCatch(st_transform(st_make_valid(st_as_sf(
+        as.polygons(rest_cls, dissolve = TRUE, na.rm = TRUE))), 4326),
+        error = function(e) NULL)
+    } else NULL
     
-    tab <- data.frame(
-      Class = lcdb_names[as.character(cover_all$value)],
-      Susceptible_ha = round(cover_all$count * cell_ha),
-      Restorable_ha  = 0, stringsAsFactors = FALSE)
+    cover_all <- freq(sc); cover <- freq(rest_cls)
+    tab <- data.frame(Class = lcdb_names[as.character(cover_all$value)],
+                      Susceptible_ha = round(cover_all$count * cell_ha),
+                      Restorable_ha = 0, stringsAsFactors = FALSE)
     if (nrow(cover))
       tab$Restorable_ha[match(cover$value, cover_all$value)] <-
       round(cover$count * cell_ha)
     tab$Percent <- round(100 * tab$Restorable_ha / tab$Susceptible_ha, 1)
     tab <- tab[order(-tab$Susceptible_ha), ]
     
-    # Mean environmental similarity for each species within the boundary
-    suit <- do.call(rbind, lapply(sp_names, function(sp) {
-      r <- rast(file.path(surf_dir, paste0(safe_name(sp), ".tif")))
-      v <- mask(crop(r, p), p)
-      data.frame(species = sp,
-                 mean_suit = global(v, "mean", na.rm = TRUE)[[1]],
-                 pct_above = 100 * global(v >= input$suit_thresh, "mean",
-                                          na.rm = TRUE)[[1]])
-    }))
+    suit <- withProgress(message = "Assessing species", value = 0, {
+      do.call(rbind, lapply(seq_along(sp_names), function(i) {
+        sp <- sp_names[i]
+        incProgress(1 / length(sp_names), detail = sp)
+        f <- file.path(surf_dir, paste0(safe_name(sp), ".tif"))
+        if (!file.exists(f)) return(NULL)
+        v <- mask(crop(rast(f), p), p)
+        d <- data.frame(species = sp,
+                        pct_above = 100 * global(v >= input$suit_thresh, "mean",
+                                                 na.rm = TRUE)[[1]],
+                        mean_suit = global(v, "mean", na.rm = TRUE)[[1]])
+        rm(v); d
+      }))
+    })
+    
+    validate(need(!is.null(suit) && nrow(suit) > 0, paste(
+      "No suitability surfaces found in", surf_dir,
+      "- check the .tif files are in the app folder.")))
+    
     suit <- merge(suit, sp_perf, by = "species")
     suit <- suit[order(-suit$pct_above), ]
     
-    list(empty = FALSE,
-         area_ha    = expanse(p, unit = "ha")[1],
-         susc_ha    = round(n_susc * cell_ha),
-         rest_ha    = round(global(rest, "sum", na.rm = TRUE)[[1]] * cell_ha),
-         above_tl   = round(global(!is.na(sc) & tl, "sum", na.rm = TRUE)[[1]] * cell_ha),
-         too_steep  = round(global(!is.na(sc) & !tl & sl > s_d, "sum", na.rm = TRUE)[[1]] * cell_ha),
-         too_far    = round(global(!is.na(sc) & !tl & sl <= s_d & da > d_m, "sum", na.rm = TRUE)[[1]] * cell_ha),
-         cover = tab, suit = suit)
+    list(empty = FALSE, area_ha = expanse(p, unit = "ha")[1],
+         susc_ha = round(n_susc * cell_ha),
+         rest_ha = round(global(rest, "sum", na.rm = TRUE)[[1]] * cell_ha),
+         above_tl  = round(global(!is.na(sc) & tl, "sum", na.rm = TRUE)[[1]] * cell_ha),
+         too_steep = round(global(!is.na(sc) & !tl & sl > s_d, "sum", na.rm = TRUE)[[1]] * cell_ha),
+         too_far   = round(global(!is.na(sc) & !tl & sl <= s_d & da > d_m, "sum", na.rm = TRUE)[[1]] * cell_ha),
+         cover = tab, suit = suit, rest_poly = rest_poly)
+  })
+  
+  # Restorable area always drawn
+  observeEvent(result(), {
+    r <- result()
+    proxy <- leafletProxy("map") |> clearGroup("Restorable")
+    if (!r$empty && !is.null(r$rest_poly) && nrow(r$rest_poly)) {
+      cls <- as.character(r$rest_poly[[1]])
+      proxy |> addPolygons(data = r$rest_poly, group = "Restorable",
+                           fillColor = unname(lcdb_cols[cls]), fillOpacity = 0.65,
+                           color = "#1B4332", weight = 0.6,
+                           label = unname(lcdb_names[cls]))
+    }
+  })
+  
+  # ---- Species picker for the closure tab ----
+  output$sp_picker <- renderUI({
+    r <- result(); req(!r$empty)
+    codes <- closure$species
+    nm    <- unname(closure$full_name[codes])
+    cov   <- round(r$suit$pct_above[match(nm, r$suit$species)])
+    tagList(
+      strong("3. Choose your planting mix"),
+      helpText(tags$small(
+        "Growth data exists for these five species only. Percentages show how much",
+        "of your site suits each. Tick the ones you could realistically source and",
+        "plant; the Canopy closure tab will show how long each combination takes.")),
+      checkboxGroupInput("plant_sp", NULL,
+                         choiceNames  = sprintf("%s (%d %% of site)", nm, cov),
+                         choiceValues = codes,
+                         selected     = codes[!is.na(cov) & cov >= 25]))
   })
   
   output$summary_box <- renderUI({
     r <- result()
-    if (r$empty)
-      return(div(class = "alert alert-warning",
-                 sprintf("No invasion-susceptible land cover within this %s ha boundary.",
-                         format(round(r$area_ha), big.mark = ","))))
+    if (r$empty) return(div(class = "alert alert-warning",
+                            sprintf("No invasion-susceptible land cover within this %s ha boundary.",
+                                    format(round(r$area_ha), big.mark = ","))))
     f <- function(x) format(x, big.mark = ",")
-    tagList(
-      h4(sprintf("%s ha boundary", f(round(r$area_ha)))),
-      tags$ul(
-        tags$li(sprintf("Invasion-susceptible land cover: %s ha", f(r$susc_ha))),
-        tags$li(tags$b(sprintf("Restorable under these constraints: %s ha (%.0f %% of susceptible)",
-                               f(r$rest_ha), 100 * r$rest_ha / r$susc_ha))),
-        tags$li(sprintf("Excluded — above treeline: %s ha", f(r$above_tl))),
-        tags$li(sprintf("Excluded — too steep: %s ha", f(r$too_steep))),
-        tags$li(sprintf("Excluded — too far from access: %s ha", f(r$too_far)))))
+    tagList(h4(sprintf("%s ha site", f(round(r$area_ha)))),
+            tags$ul(
+              tags$li(sprintf("Vulnerable to wilding conifer invasion: %s ha", f(r$susc_ha))),
+              tags$li(tags$b(sprintf("Plantable under your constraints: %s ha (%.0f %%)",
+                                     f(r$rest_ha), 100 * r$rest_ha / r$susc_ha))),
+              tags$li(sprintf("Ruled out, above the treeline: %s ha", f(r$above_tl))),
+              tags$li(sprintf("Ruled out, too steep: %s ha", f(r$too_steep))),
+              tags$li(sprintf("Ruled out, too far from access: %s ha", f(r$too_far)))),
+            helpText(tags$small("Each area is counted once, against the first constraint",
+                                "it failed: treeline, then slope, then distance.")))
   })
   
   output$cover_tbl <- renderDT({
     r <- result(); req(!r$empty)
     datatable(r$cover, rownames = FALSE, options = list(dom = "t", paging = FALSE),
-              colnames = c("Land cover class", "Susceptible (ha)",
-                           "Restorable (ha)", "% restorable"))
+              colnames = c("Land cover class", "Vulnerable (ha)",
+                           "Plantable (ha)", "% plantable"))
   })
   
   output$species_tbl <- renderDT({
-    r <- result(); req(!r$empty)
-    d <- r$suit
-    d$Type <- ifelse(d$species %in% conifers, "Wilding conifer", "Indigenous")
-    out <- data.frame(
-      Species = d$species, Type = d$Type,
-      `Site coverage (%)` = round(d$pct_above, 1),
-      `Mean similarity`   = round(d$mean_suit, 3),
-      AUC = round(d$auc, 2), `Omission (%)` = round(d$omission, 1),
-      Records = d$n, check.names = FALSE)
+    r <- result(); req(!r$empty); d <- r$suit
+    out <- data.frame(Species = d$species,
+                      Type = ifelse(d$species %in% conifers, "Wilding conifer", "Indigenous"),
+                      `Site coverage (%)` = round(d$pct_above, 1),
+                      `Mean similarity` = round(d$mean_suit, 3),
+                      AUC = round(d$auc, 2), `Omission (%)` = round(d$omission, 1),
+                      `Records used` = d$n, check.names = FALSE)
     datatable(out, rownames = FALSE, options = list(pageLength = 18, dom = "t")) |>
       formatStyle("Type", target = "row",
                   backgroundColor = styleEqual("Wilding conifer", "#f2dede"))
   })
   
   output$closure_note <- renderUI({
-    r <- result(); req(!r$empty)
-    ok <- intersect(closure$species |> (\(s) closure$full_name[s])(),
-                    r$suit$species[r$suit$pct_above >= 50])
     tagList(
-      helpText(
-        "Projected years to reach LAI 2.5, the canopy closure threshold associated with",
-        "resistance to wilding conifer establishment. Estimates derive from 185 plots at",
-        sprintf("43 restoration sites aged %.1f to %.0f years, and are indicative rather than predictive.",
+      helpText(tags$b("How long until the canopy closes?"),
+               "Once leaf area index reaches about 2.5, a planted stand shades the ground",
+               "enough to resist wilding conifer seedlings establishing. The table shows how",
+               "long each combination of the species you ticked is projected to take."),
+      helpText(tags$small(
+        sprintf("Projections come from 185 plots at 43 South Island restoration sites aged %.1f to %.0f years. ",
                 closure$age_range[["min"]], closure$age_range[["max"]]),
-        "Only combinations observed in at least five plots are shown. Species are treated",
-        "as present or absent; planting density is not accounted for."),
-      if (!length(ok)) div(class = "alert alert-info",
-                           "None of the five species with growth data is environmentally suitable across at least half of this site.")
-    )
+        "They are indicative, not predictive: species are treated as present or absent,",
+        "planting density is not accounted for, and combinations recorded in fewer than",
+        "five plots are not shown.")),
+      helpText(tags$small(tags$b("Support: "),
+                          "Strong means every species in the combination had a statistically significant",
+                          "effect on leaf area index. Moderate means every species appeared in most of the",
+                          "competitive models but was not individually significant. Weak means at least one",
+                          "species had limited support in the data. Treat Weak rows as rough guidance only.")))
   })
   
   output$closure_tbl <- renderDT({
     r <- result(); req(!r$empty)
-    suitable <- r$suit$species[r$suit$pct_above >= 50]
+    chosen <- input$plant_sp
     lk <- closure$lookup[closure$lookup$n_plots >= 5, ]
     
-    # Keep only combinations whose species are all suitable at this site
-    keep <- sapply(strsplit(lk$species, "\\+"), function(codes) {
-      if (identical(codes, "none")) return(TRUE)
-      all(closure$full_name[codes] %in% suitable)
-    })
-    lk <- lk[keep, c("assemblage", "age_closure", "n_plots", "extrapolated")]
+    keep <- sapply(strsplit(lk$species, "\\+"), function(codes)
+      identical(codes, "none") || all(codes %in% chosen))
+    lk <- lk[keep, ]
     
-    datatable(lk, rownames = FALSE,
-              options = list(pageLength = 15, order = list(list(1, "asc"))),
-              colnames = c("Species assemblage", "Years to LAI 2.5",
-                           "Supporting plots", "Beyond observed ages"))
+    if (!nrow(lk)) return(datatable(data.frame(
+      Note = "Tick at least one species in the sidebar to see closure projections."),
+      rownames = FALSE, options = list(dom = "t")))
+    
+    sup <- lapply(lk$species, support_for)
+    out <- data.frame(Assemblage = lk$assemblage,
+                      `Years to canopy closure` = lk$age_closure,
+                      `Plots supporting this mix` = lk$n_plots,
+                      Support = sapply(sup, `[[`, "level"),
+                      check.names = FALSE)
+    
+    datatable(out, rownames = FALSE,
+              options = list(pageLength = 15, order = list(list(1, "asc")))) |>
+      formatStyle("Support", backgroundColor = styleEqual(
+        c("Strong", "Moderate", "Weak"), c("#D8F3DC", "#FFF3CD", "#F8D7DA")))
   })
 }
 
 shinyApp(ui, server)
-
-
-
-
-
-
